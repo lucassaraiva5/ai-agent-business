@@ -3,6 +3,8 @@ package app
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/signal"
 	"sync"
 	"time"
 
@@ -16,7 +18,6 @@ import (
 	"ai-agent-business/internal/infra/variables"
 
 	"github.com/aws/aws-lambda-go/lambda"
-	"github.com/facebookgo/grace/gracehttp"
 	"github.com/labstack/echo/v4"
 )
 
@@ -69,7 +70,10 @@ func (app *App) Stop() {
 
 	logger.Warn(context.Background(), "Stopping application", nil)
 
-	if err := app.server.Close(); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := app.server.Shutdown(ctx); err != nil {
 		logger.Error(context.Background(), "Error while trying to close echo server", attributes.New().WithError(err))
 	}
 
@@ -95,8 +99,18 @@ func (app *App) startServer(start time.Time) {
 		lambda.Start(lambdaAdapter.Handler)
 		logger.Warn(context.Background(), "Application stopped [Lambda]", nil)
 	} else {
-		err := gracehttp.Serve(app.server.Server)
-		logger.Warn(context.Background(), "Application stopped gracefully", attributes.New().WithError(err))
+		// Set up graceful shutdown
+		quit := make(chan os.Signal, 1)
+		signal.Notify(quit, os.Interrupt)
+
+		go func() {
+			<-quit
+			app.Stop()
+		}()
+
+		if err := app.server.Start(fmt.Sprintf("%s:%d", variables.ServerHost(), variables.ServerPort())); err != nil {
+			logger.Warn(context.Background(), "Application stopped", attributes.New().WithError(err))
+		}
 	}
 }
 
